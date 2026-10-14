@@ -1,0 +1,12 @@
+# 统一用 LF：本项目的产物（client.js、cordis.patch.yml）会在 Linux 服务器上运行，
+# 在 Windows 上被转成 CRLF 容易在部署时出意外。
+* text=auto eol=lf
+
+# 生成的大文件不做换行转换：它们由脚本产出，本来就不该逐行 diff
+lib/client.js -text
+site/data.json -text
+
+# 图片按二进制处理
+*.png binary
+*.jpg binary
+*.ico binary

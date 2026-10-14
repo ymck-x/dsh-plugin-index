@@ -1,0 +1,17 @@
+# dsh-plugin-index：DSH 插件索引面板。
+#
+# 安装后：设置 → 插件 → 多出一个「插件索引」页，
+# 列出经 cordis.patch.yml 硬判定验证过的第三方插件，可一键安装。
+#
+# 清单是构建期产物（由 dsh-index 管道在服务器上生成），
+# 插件只消费它，不在运行时抓 GitHub：验证一个插件要读两三个文件，
+# 上千条候选放进 UI 里现抓会把面板卡死，而且会撞上 API 限速。
+#
+# 可覆盖内置清单路径（默认用包内 data/index.json）：
+#   - id: dsh-plugin-index
+#     config:
+#       dataFile: /path/to/plugins.json
+- insert:
+    - id: dsh-plugin-index
+      name: dsh-plugin-index
+      config: {}

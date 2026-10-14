@@ -1,0 +1,23 @@
+# 服务器产物，不进版本库
+data/plugins.json
+data/index.json
+
+# 部署时生成，不进版本库
+site/data.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# 注意：lib/client.js 必须提交。
+# 它是插件的运行产物（清单数据内联在里面），别人安装后靠它工作，
+# 不能靠 .gitignore 排除、也不能指望使用者自己构建。
