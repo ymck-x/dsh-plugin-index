@@ -41,7 +41,7 @@ dsh plugin --profile desktop add https://github.com/ymck-x/dsh-plugin-index/arch
 
 ## 清单从哪来
 
-清单由服务器上的 [`dsh-index`](https://github.com/ymck-x/dsh-index) 管道产出，本插件只消费它。发现与判定分三步：
+清单由服务器上的一套抓取管道产出，本插件只消费它。发现与判定分三步：
 
 | 步骤 | 做什么 |
 |---|---|
