@@ -18,11 +18,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OWNER/dsh-plugin-index.git"
+    "url": "git+https://github.com/ymck-x/dsh-plugin-index.git"
   },
   "homepage": "https://cj.codexve.cn/",
   "bugs": {
-    "url": "https://github.com/OWNER/dsh-plugin-index/issues"
+    "url": "https://github.com/ymck-x/dsh-plugin-index/issues"
   },
   "dsh": {
     "manifestVersion": 1,

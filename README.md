@@ -28,7 +28,7 @@
 ## 安装
 
 ```sh
-dsh plugin --profile desktop add https://github.com/<owner>/dsh-plugin-index/archive/refs/tags/v0.1.0.tar.gz
+dsh plugin --profile desktop add https://github.com/ymck-x/dsh-plugin-index/archive/refs/tags/v0.1.0.tar.gz
 ```
 
 `desktop` 换成你自己的 profile 名（`~/.dsh/profiles/` 下的目录名）。装完重启 `dsh`。
@@ -41,7 +41,7 @@ dsh plugin --profile desktop add https://github.com/<owner>/dsh-plugin-index/arc
 
 ## 清单从哪来
 
-清单由服务器上的 [`dsh-index`](https://github.com/<owner>/dsh-index) 管道产出，本插件只消费它。发现与判定分三步：
+清单由服务器上的 [`dsh-index`](https://github.com/ymck-x/dsh-index) 管道产出，本插件只消费它。发现与判定分三步：
 
 | 步骤 | 做什么 |
 |---|---|
