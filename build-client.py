@@ -111,7 +111,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-plugin-index',
   factory: (require) => {
     const React = require('react');
-    const { useState, useMemo } = React;
+    const { useState, useMemo, useEffect } = React;
     const h = React.createElement;
 
     const META = %(meta)s;
@@ -162,13 +162,9 @@ window.__ModuleLoader__.load({
     // 这三个地址类型是不可变的（内容不会随作者推代码而变），其余都跟随默认分支
     const PINNED = new Set(['npm', 'tag', 'commit']);
     const KIND_TEXT = { npm: 'npm 版本', tag: 'tag', commit: 'commit' };
-    // 类别在构建期用关键词规则打好，这里按条目数降序（含「其他」）
-    const GROUPS = (() => {
-      const count = new Map();
-      for (const p of PLUGINS) count.set(p.g || '其他', (count.get(p.g || '其他') || 0) + 1);
-      return [...count.entries()].sort((a, b) => b[1] - a[1]).map((e) => e[0]);
-    })();
-    const FILTERS = [['all', '全部分类']].concat(GROUPS.map((g) => [g, g]));
+    // 远端清单：打开面板时拉一次，拉到就用最新的，拉不到就用内联的那份。
+    // 同一份文件带 ETag，内容没变时浏览器拿到 304，几乎不耗流量。
+    const REMOTE_URL = SITE_URL + 'data.json';
     // 清单里存的是 owner/repo。主标题只放仓库名，owner 降为小字：
     // 仓库名会重复（清单里 dsh-plugins 就出现在 4 个不同 owner 下），
     // 所以 owner 不能完全不显示，只是不该顶在最前面。
@@ -182,10 +178,37 @@ window.__ModuleLoader__.load({
       const [sort, setSort] = useState('default');
       const [limit, setLimit] = useState(PAGE);
       const [jobs, setJobs] = useState({});
+      // 远端清单：null 表示还没拿到，此时用内联那份
+      const [remote, setRemote] = useState(null);
+
+      const plugins = remote ? remote.plugins : PLUGINS;
+      const generatedAt = remote ? remote.generated_at : META.generated_at;
+
+      useEffect(() => {
+        let cancelled = false;
+        fetch(REMOTE_URL, { credentials: 'omit' })
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+          .then((d) => {
+            if (cancelled || !d || !Array.isArray(d.plugins) || !d.plugins.length) return;
+            setRemote({ plugins: d.plugins, generated_at: d.generated_at });
+          })
+          .catch(() => {
+            // 拿不到就继续用内联数据：服务器不可用不该让插件失效
+          });
+        return () => { cancelled = true; };
+      }, []);
+
+      // 分类从当前这份数据统计 —— 换成远端清单后，分类筛选跟着变
+      const FILTERS = useMemo(() => {
+        const count = new Map();
+        for (const p of plugins) count.set(p.g || '其他', (count.get(p.g || '其他') || 0) + 1);
+        const groups = [...count.entries()].sort((a, b) => b[1] - a[1]).map((e) => e[0]);
+        return [['all', '全部分类']].concat(groups.map((g) => [g, g]));
+      }, [plugins]);
 
       const shown = useMemo(() => {
         const q = query.trim().toLowerCase();
-        let list = PLUGINS.filter((p) => {
+        let list = plugins.filter((p) => {
           if (filter !== 'all' && p.g !== filter) return false;
           if (minStars > 0 && (p.st || 0) < minStars) return false;
           if (!q) return true;
@@ -196,7 +219,7 @@ window.__ModuleLoader__.load({
           list = list.slice().sort((a, b) => (b.st || 0) - (a.st || 0));
         }
         return list;
-      }, [query, filter, minStars, sort]);
+      }, [query, filter, minStars, sort, plugins]);
 
       function setJob(repo, job) {
         setJobs((prev) => ({ ...prev, [repo]: job }));
@@ -220,7 +243,8 @@ window.__ModuleLoader__.load({
       const head = h('div', null,
         h('h2', null, '插件索引'),
         h('p', { className: 'muted' },
-          '共 ' + PLUGINS.length + ' 个经校验的插件 · 清单生成于 ' + (META.generated_at || '未知')),
+          '共 ' + plugins.length + ' 个经校验的插件 · 清单生成于 ' + (generatedAt || '未知')
+            + (remote ? '（已从网站取到最新）' : '（插件内置）')),
         h('p', { className: 'muted' },
           '判定依据是 package.json 里的 dsh.bundle.patch，排序按证据强度而不是星数。'),
         // 网站是同一份数据的网页版，样式和筛选比设置页里这个面板宽松得多
