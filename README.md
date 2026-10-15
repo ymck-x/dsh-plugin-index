@@ -28,7 +28,7 @@
 ## 安装
 
 ```sh
-dsh plugin --profile desktop add https://github.com/ymck-x/dsh-plugin-index/archive/refs/tags/v0.1.1.tar.gz
+dsh plugin --profile desktop add https://github.com/ymck-x/dsh-plugin-index/archive/refs/tags/v0.1.2.tar.gz
 ```
 
 `desktop` 换成你自己的 profile 名（`~/.dsh/profiles/` 下的目录名）。装完重启 `dsh`。
