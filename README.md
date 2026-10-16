@@ -15,8 +15,8 @@
 在 DSH 里：**设置 → 插件 → 插件索引**
 
 - 收录 **1 万余个**经校验的插件（还在持续增长）
-- 按功能分类筛选（15 类）、按星数筛选、按证据强度或星数排序
-- 每条显示仓库名、作者、描述、星数、分类标签
+- 按功能分类筛选（15 类）、按星数筛选；排序可选**证据强度**、**星数**或**最近更新**
+- 每条显示仓库名、作者、描述、星数、forks、最近更新日期与分类标签
 - 点「复制」拿到等价的手动安装命令，或直接点「安装」交给 DSH
 
 **也可以直接访问网站**：<https://cj.codexve.cn/>
@@ -28,7 +28,7 @@
 ## 安装
 
 ```sh
-dsh plugin --profile desktop add https://github.com/ymck-x/dsh-plugin-index/archive/refs/tags/v0.1.3.tar.gz
+dsh plugin --profile desktop add https://github.com/ymck-x/dsh-plugin-index/archive/refs/tags/v0.1.4.tar.gz
 ```
 
 `desktop` 换成你自己的 profile 名（`~/.dsh/profiles/` 下的目录名）。装完重启 `dsh`。
