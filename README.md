@@ -28,7 +28,7 @@
 ## 安装
 
 ```sh
-dsh plugin --profile desktop add https://github.com/ymck-x/dsh-plugin-index/archive/refs/tags/v0.1.2.tar.gz
+dsh plugin --profile desktop add https://github.com/ymck-x/dsh-plugin-index/archive/refs/tags/v0.1.3.tar.gz
 ```
 
 `desktop` 换成你自己的 profile 名（`~/.dsh/profiles/` 下的目录名）。装完重启 `dsh`。
@@ -71,26 +71,39 @@ DSH 生态在 2026 年 8～10 月集中爆发，`topic:dsh-plugin` 下有 1.8 �
 
 ```
 lib/index.js        Host 半侧（空壳：数据在 client 半，这边无需注册路由）
-lib/client.js       客户端半侧 —— 界面 + 内联的清单数据（由脚本生成）
+lib/client.js       客户端半侧 —— 界面 + 内置首片快照（由脚本生成）
 site/index.html     网站页面（独立静态站，部署在 cj.codexve.cn）
 build-client.py     读 data/plugins.json → 生成 lib/client.js
-build-site.py       读 data/plugins.json → 生成 site/data.json
+build-site.py       读 data/plugins.json → 生成 site/index.json + 分片（本地预览用）
 cordis.patch.yml    组合层声明
 ```
 
-**数据怎么来**：`client.js` 里带一份内联清单当**回退**；打开面板时会同时去 `cj.codexve.cn/data.json` 拉最新的一份（带 ETag，内容没变时返回 304）。**拉到就用最新的，拉不到就用内联的**——所以服务器不可用不会让插件失效，清单更新了用户也不必重装。
+**数据怎么来**：清单有 4 MB，一次拉完在国内链路上必然超时（实测经 Cloudflare 只有 1–20 KB/s，且时常断流），所以数据分两层按需取：
 
-**为什么是「内联 + 远端」而不是纯远端**：纯远端意味着服务器一挂插件就空白。另一个极端是纯 Host 侧读文件再注册 HTTP 路由，那要跨服务注入、路由注册、同源校验三道门，任何一道没接好就是「取不到数据」（这个坑踩过）。内联兜底 + 远端更新，两头都不丢。
+| 层 | 内容 | 什么时候用 |
+|---|---|---|
+| 内置快照 | 首片 500 条，打包进 `client.js`（约 180 KB） | 远端拉不到时的兜底；也让插件包从 3.5 MB 降到 180 KB |
+| 远端索引 + 分片 | `index.json`（1.5 KB：统计与分片清单）+ `p/<生成戳>-N.json`（每片 500 条） | 打开面板先取索引，再取第一片；要看更多时按需取下一片 |
+
+片名带生成戳、内容不可变，所以分片可以长缓存；索引保持 `no-cache`，才能发现新发布的那一批。**拉取失败时面板会明确写出「当前是内置快照」**——旧版是静默退回，用户会以为看到的就是最新的。
+
+**为什么不把清单整个内联**：全量内联会让插件包变成 3.5 MB，而每次安装或更新都要下这么多，兜底数据却只在远端不可用时才用得上。另一个极端是让 Host 半侧读文件再注册 HTTP 路由，那要跨服务注入、路由注册、同源校验三道门，任何一道没接好就是「取不到数据」（这个坑踩过）。
 
 ### 自己构建
 
 ```sh
-# 需要先有一份服务器产出的清单：data/plugins.json
-python build-client.py     # 生成 lib/client.js
-python build-site.py       # 生成 site/data.json
+# 需要先有一份服务器产出的清单：data/plugins.json（从服务器 scp 下来）
+python build-client.py     # 生成 lib/client.js（内置首片快照）
+python build-site.py       # 生成 site/index.json + site/p/（本地预览）
 ```
 
-`data/plugins.json` 不进版本库（11 MB，且是服务器产物）。
+或者用脚本一步到位（拉取 + 重建，发版前必跑）：
+
+```powershell
+pwsh -File refresh-snapshot.ps1 -Server ubuntu@<服务器> -Key <私钥路径>
+```
+
+`data/plugins.json` 不进版本库（12 MB，且是服务器产物）。
 
 ---
 
@@ -99,6 +112,7 @@ python build-site.py       # 生成 site/data.json
 - 「地址已锁定」是按 tag / commit 解析的结果，**不代表在当前 DSH 版本上真的能装能用**。运行级验证需要一台装了 DSH 的机器。
 - 功能分类是**关键词规则**（匹配描述、关键词、包名、仓库名），不调模型。好处是零成本、可复现、改规则立刻生效；代价是约 16% 归入「其他」。
 - 星数只是参考信号，**不作为质量结论**——它既不能证明好用，也不能证明不能用。
+- 列表里的**最近更新**（`pushed_at`）和 **forks** 是两个更实用的信号：前者回答「还在维护吗」，后者表示「有人拿去改造过」。清单里近七成是 0–2 星的新仓库，所以「上周还在更新」往往比「星数高但半年没动」更有参考价值。
 
 ## 许可
 

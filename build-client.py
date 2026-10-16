@@ -34,9 +34,18 @@ FIELDS = (
     ("e", "evidence_score"),
     # 星数只用于排序和「只看 N 星以上」筛选，不作为质量结论
     ("st", "stars"),
+    # f = forks、u = 最近更新（pushed_at）：「这插件还在维护吗」的参考信号
+    ("f", "forks"),
+    ("u", "pushed_at"),
 )
 
 DESC_MAX = 110
+
+# 内置快照只放首片：清单有 4 MB，全量内联会让插件包变成 3.5 MB，
+# 而兜底数据只在「远端拉不到」时才会用到，没必要把全量背在包里。
+SNAPSHOT_LIMIT = 500
+# 必须与服务器 dsh_index/site.py 的 PAGE_SIZE 一致：远端就是这么切的
+PAGE_SIZE = 500
 
 # 功能分类：纯关键词规则，不调模型（零成本、可复现、改规则即刻生效）。
 # 顺序即优先级 —— 先匹配到的类别胜出，所以特征最强的放前面。
@@ -103,10 +112,14 @@ def slim(plugin: dict) -> dict:
 
 TEMPLATE = """// 本文件由 build-client.py 生成，请勿手工编辑。
 // 数据来源：服务器 dsh-index 管道产出的 public/plugins.json
-// 生成时间：%(generated)s   条目数：%(count)d
+// 生成时间：%(generated)s   内置快照：%(count)d 条（首片）
 //
-// 清单直接内联在下面，所以这个插件不依赖网络、不依赖 Host 侧路由，
-// 浏览器刷新即可生效。
+// 数据分两层：
+//   1. 内置快照 SNAPSHOT —— 只有首片，是「远端拉不到」时的兜底，不是完整清单。
+//      正因为只内联首片，插件包从 3.5 MB 降到百 KB 量级。
+//   2. 远端分片 —— 打开面板先取 index.json，再按需取片（每片 %(page_size)d 条）。
+// 为什么不内联全量：清单 4 MB，国内经 Cloudflare 的链路实测只有几十 KB/s，
+// 一次性下载会超时，面板就只能一直显示旧快照。
 window.__ModuleLoader__.load({
   id: 'dsh-plugin-index',
   factory: (require) => {
@@ -115,7 +128,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
 
     const META = %(meta)s;
-    const PLUGINS = %(plugins)s;
+    const SNAPSHOT = %(plugins)s;
 
     // 全部使用 DSH 的真实主题令牌（--dsw-alias-*，来自 cordis_inspect_query 的 Theme）。
     // 不要自造变量名：写错了不报错，只会静默回退到硬编码颜色，
@@ -157,14 +170,14 @@ window.__ModuleLoader__.load({
     `;
 
     const PAGE = 60;
-    // 网站版（同一份数据，静态托管，走 Cloudflare 隧道 → nginx:8081，与 DSH 隔离）
+    // 网站版（同一份数据，静态托管；cj.codexve.cn 现在直连服务器，不再经 Cloudflare）
     const SITE_URL = 'https://cj.codexve.cn/';
     // 这三个地址类型是不可变的（内容不会随作者推代码而变），其余都跟随默认分支
     const PINNED = new Set(['npm', 'tag', 'commit']);
     const KIND_TEXT = { npm: 'npm 版本', tag: 'tag', commit: 'commit' };
-    // 远端清单：打开面板时拉一次，拉到就用最新的，拉不到就用内联的那份。
-    // 同一份文件带 ETag，内容没变时浏览器拿到 304，几乎不耗流量。
-    const REMOTE_URL = SITE_URL + 'data.json';
+    // 远端数据分两个请求：索引（几 KB，每次回源校验）+ 按需取的分片
+    // （片名带生成戳、内容不可变，所以可以长缓存）。首屏只需要「索引 + 第一片」。
+    const REMOTE_BASE = SITE_URL;
     // 清单里存的是 owner/repo。主标题只放仓库名，owner 降为小字：
     // 仓库名会重复（清单里 dsh-plugins 就出现在 4 个不同 owner 下），
     // 所以 owner 不能完全不显示，只是不该顶在最前面。
@@ -178,25 +191,55 @@ window.__ModuleLoader__.load({
       const [sort, setSort] = useState('default');
       const [limit, setLimit] = useState(PAGE);
       const [jobs, setJobs] = useState({});
-      // 远端清单：null 表示还没拿到，此时用内联那份
-      const [remote, setRemote] = useState(null);
+      // 远端层：index 是索引、shardRows 是已取到的条目、failed 记录失败原因。
+      // 三者都空的时候退回内置快照。
+      const [index, setIndex] = useState(null);
+      const [shardRows, setShardRows] = useState([]);
+      const [failed, setFailed] = useState(null);
+      const [loadingMore, setLoadingMore] = useState(false);
 
-      const plugins = remote ? remote.plugins : PLUGINS;
-      const generatedAt = remote ? remote.generated_at : META.generated_at;
+      const loaded = shardRows.length > 0;
+      const plugins = loaded ? shardRows : SNAPSHOT;
+      const generatedAt = index ? index.generated_at : META.generated_at;
+      const grandTotal = (index && index.counts_total) || META.counts_total || SNAPSHOT.length;
+      const pageSize = (index && index.page_size) || %(page_size)d;
 
+      // 打开面板：取索引 → 取第一片。任何一步失败都保留快照，并把原因显示出来。
+      // 旧版是静默退回内置数据，用户会以为看到的就是最新的。
       useEffect(() => {
         let cancelled = false;
-        fetch(REMOTE_URL, { credentials: 'omit' })
-          .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+        const fail = (why) => { if (!cancelled) setFailed(why); };
+        fetch(REMOTE_BASE + 'index.json', { credentials: 'omit', cache: 'no-cache' })
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error('索引 HTTP ' + r.status))))
           .then((d) => {
-            if (cancelled || !d || !Array.isArray(d.plugins) || !d.plugins.length) return;
-            setRemote({ plugins: d.plugins, generated_at: d.generated_at });
+            if (cancelled) return;
+            const pages = (d && d.pages) || [];
+            if (!pages.length) { fail('索引里没有分片'); return; }
+            setIndex(d);
+            return fetch(REMOTE_BASE + pages[0].f, { credentials: 'omit' })
+              .then((r) => (r.ok ? r.json() : Promise.reject(new Error('分片 HTTP ' + r.status))))
+              .then((chunk) => {
+                if (cancelled) return;
+                if (!Array.isArray(chunk) || !chunk.length) { fail('分片内容为空'); return; }
+                setShardRows(chunk);
+              });
           })
-          .catch(() => {
-            // 拿不到就继续用内联数据：服务器不可用不该让插件失效
-          });
+          .catch((err) => fail(String((err && err.message) || err)));
         return () => { cancelled = true; };
       }, []);
+
+      // 需要更多条目时接着取下一片，片名由索引给出
+      function loadNextShard() {
+        if (!index || loadingMore) return;
+        const page = (index.pages || [])[Math.floor(shardRows.length / pageSize)];
+        if (!page) return;
+        setLoadingMore(true);
+        fetch(REMOTE_BASE + page.f, { credentials: 'omit' })
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error('分片 HTTP ' + r.status))))
+          .then((chunk) => { if (Array.isArray(chunk)) setShardRows((prev) => prev.concat(chunk)); })
+          .catch((err) => setFailed(String((err && err.message) || err)))
+          .then(() => setLoadingMore(false));
+      }
 
       // 分类从当前这份数据统计 —— 换成远端清单后，分类筛选跟着变
       const FILTERS = useMemo(() => {
@@ -214,9 +257,12 @@ window.__ModuleLoader__.load({
           if (!q) return true;
           return [p.r, p.n, p.d].join(' ').toLowerCase().includes(q);
         });
-        // 默认顺序是构建期的证据强度；按星数排是给「想看有人验证过的」用的
+        // 默认顺序是构建期的证据强度；按星数排给「想看有人验证过的」；
+        // 按最近更新排给「只想要还在维护的」—— 清单里近七成是 0–2 星的新仓库
         if (sort === 'stars') {
           list = list.slice().sort((a, b) => (b.st || 0) - (a.st || 0));
+        } else if (sort === 'fresh') {
+          list = list.slice().sort((a, b) => String(b.u || '').localeCompare(String(a.u || '')));
         }
         return list;
       }, [query, filter, minStars, sort, plugins]);
@@ -243,8 +289,18 @@ window.__ModuleLoader__.load({
       const head = h('div', null,
         h('h2', null, '插件索引'),
         h('p', { className: 'muted' },
-          '共 ' + plugins.length + ' 个经校验的插件 · 清单生成于 ' + (generatedAt || '未知')
-            + (remote ? '（已从网站取到最新）' : '（插件内置）')),
+          '共 ' + grandTotal + ' 个经校验的插件 · 清单生成于 ' + (generatedAt || '未知')
+            + (loaded ? '（已从网站取到最新）' : '（插件内置快照）')),
+        failed
+          ? h('div', { className: 'notice' },
+              '远端清单拉取失败：' + failed + '。当前显示的是插件内置快照（生成于 '
+                + (META.generated_at || '未知') + '，只有 ' + SNAPSHOT.length + ' 条），'
+                + '不含之后新增的插件；换到能访问 ' + SITE_URL + ' 的网络后重开本页即可。')
+          : null,
+        loaded && shardRows.length < grandTotal
+          ? h('p', { className: 'muted' },
+              '已加载 ' + shardRows.length + ' / ' + grandTotal + ' 条；搜索与筛选只作用于已加载的部分。')
+          : null,
         h('p', { className: 'muted' },
           '判定依据是 package.json 里的 dsh.bundle.patch，排序按证据强度而不是星数。'),
         // 网站是同一份数据的网页版，样式和筛选比设置页里这个面板宽松得多
@@ -282,7 +338,7 @@ window.__ModuleLoader__.load({
           'aria-label': '排序方式',
           onChange: (e) => { setSort(e.target.value); setLimit(PAGE); },
         },
-          [['default', '按证据强度'], ['stars', '按星数']]
+          [['default', '按证据强度'], ['stars', '按星数'], ['fresh', '按最近更新']]
             .map(([value, label]) => h('option', { key: value, value }, label))
         )
       );
@@ -300,7 +356,10 @@ window.__ModuleLoader__.load({
               [repoOwner(p.r),
                (p.n || '') + (p.v ? ' @ ' + p.v : ''),
                // 0 星也照实显示 —— 清单里近三成是 0 星，藏起来只会让人误判
-               (p.st || 0) + ' ★'].filter(Boolean).join(' · ')),
+               (p.st || 0) + ' ★',
+               // forks 与最近更新：判断「这插件还在维护吗」最直接的两个信号
+               p.f ? p.f + ' forks' : null,
+               p.u ? '更新于 ' + p.u : null].filter(Boolean).join(' · ')),
             p.d ? h('p', { className: 'desc' }, p.d) : null,
             tags.length ? h('div', { className: 'tags' }, tags) : null
           ),
@@ -315,14 +374,22 @@ window.__ModuleLoader__.load({
         );
       });
 
+      const moreLoaded = loaded && shardRows.length < grandTotal;
       return h('div', { className: 'dpi' },
         h('style', null, css),
         head,
         bar,
         h('p', { className: 'muted' }, '匹配 ' + shown.length + ' 个，显示前 ' + Math.min(limit, shown.length) + ' 个'),
         h('div', { className: 'list' }, rows),
-        shown.length > limit
-          ? h('div', { className: 'more' }, h('button', { onClick: () => setLimit(limit + PAGE) }, '再看 ' + PAGE + ' 个'))
+        (shown.length > limit || moreLoaded)
+          ? h('div', { className: 'more' },
+              shown.length > limit
+                ? h('button', { onClick: () => setLimit(limit + PAGE) }, '再看 ' + PAGE + ' 个')
+                : null,
+              moreLoaded
+                ? h('button', { onClick: loadNextShard, disabled: loadingMore },
+                    loadingMore ? '正在加载…' : '加载更多（已加载 ' + shardRows.length + ' / ' + grandTotal + '）')
+                : null)
           : null
       );
     }
@@ -356,6 +423,7 @@ window.__ModuleLoader__.load({
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="只取前 N 条（0 = 全部）")
+    ap.add_argument("--snapshot", type=int, default=0, help=f"内置快照条数（默认 {SNAPSHOT_LIMIT}）")
     args = ap.parse_args()
 
     with open(SRC, encoding="utf-8") as fh:
@@ -366,7 +434,8 @@ def main() -> int:
         plugins = plugins[: args.limit]
 
     lite = [slim(p) for p in plugins]
-    data_js = json.dumps(lite, ensure_ascii=False, separators=(",", ":"))
+    snapshot = lite[: args.snapshot or SNAPSHOT_LIMIT]
+    data_js = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
     # U+2028 / U+2029 在 JS 源码里会断行，必须转义
     data_js = data_js.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
 
@@ -374,11 +443,13 @@ def main() -> int:
         "schema": payload.get("schema"),
         "generated_at": payload.get("generated_at"),
         "order": payload.get("order"),
+        "counts_total": (payload.get("counts") or {}).get("total") or len(lite),
     }
 
     text = TEMPLATE % {
         "generated": meta["generated_at"] or "",
-        "count": len(lite),
+        "count": len(snapshot),
+        "page_size": PAGE_SIZE,
         "meta": json.dumps(meta, ensure_ascii=False),
         "plugins": data_js,
     }
@@ -388,9 +459,9 @@ def main() -> int:
         fh.write(text)
 
     size = os.path.getsize(OUT)
-    print(f"entries : {len(lite)}")
+    print(f"内置快照: {len(snapshot)} 条（远端另有 {len(lite)} 条可按需取）")
     print(f"output  : {OUT}")
-    print(f"size    : {size} bytes ({size / 1024 / 1024:.1f} MiB)")
+    print(f"size    : {size} bytes ({size / 1024:.1f} KiB)")
 
     # 类别分布：用来检查关键词规则的覆盖率，其他太多就说明规则要补
     dist: dict = {}

@@ -162,6 +162,7 @@ footer code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg
     <select id="sort">
       <option value="default">按证据强度</option>
       <option value="stars">按星数</option>
+      <option value="fresh">按最近更新</option>
       <option value="name">按名称</option>
     </select>
   </div>
@@ -181,7 +182,8 @@ footer code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg
 <script>
 const PAGE = 60;
 const PINNED = ['npm','tag','commit'];
-const state = { data: [], shown: [], limit: PAGE };
+// data 是「已加载的条目」，不是全量：清单 4 MB，首屏只取「索引 + 第一片」
+const state = { data: [], shown: [], limit: PAGE, index: null, page: 0, loading: false };
 
 const el = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -219,13 +221,19 @@ function render(){
       + '<div class="row-side">'
       +   chips.join('')
       +   '<span class="stars' + hot + '">' + (p.st || 0) + '</span>'
+      +   (p.f ? '<span class="chip">' + p.f + ' forks</span>' : '')
+      +   (p.u ? '<span class="chip">更新 ' + esc(p.u) + '</span>' : '')
       +   '<button class="copy" data-i="' + i + '" title="' + esc(installCmd(p)) + '">复制</button>'
       + '</div>'
       + '</div>';
   }).join('');
 
-  el('count').textContent = '匹配 ' + state.shown.length.toLocaleString() + ' 个 · 已显示 ' + slice.length.toLocaleString() + ' 个';
-  el('moreWrap').hidden = state.shown.length <= state.limit;
+  const moreShards = state.index && state.page < state.index.pages.length;
+  el('count').textContent = '匹配 ' + state.shown.length.toLocaleString() + ' 个 · 已显示 '
+    + slice.length.toLocaleString() + ' 个'
+    + (moreShards ? ' · 已加载 ' + state.data.length.toLocaleString() + ' / '
+        + (state.index.counts_total || '?').toLocaleString() + ' 条' : '');
+  el('moreWrap').hidden = state.shown.length <= state.limit && !moreShards;
 }
 
 function apply(){
@@ -242,6 +250,7 @@ function apply(){
   });
 
   if (sort === 'stars') list = list.slice().sort((a,b) => (b.st||0) - (a.st||0));
+  else if (sort === 'fresh') list = list.slice().sort((a,b) => String(b.u||'').localeCompare(String(a.u||'')));
   else if (sort === 'name') list = list.slice().sort((a,b) => repoName(a.r).localeCompare(repoName(b.r)));
 
   state.shown = list;
@@ -260,45 +269,64 @@ el('list').addEventListener('click', (e) => {
   else { btn.textContent = '不支持'; }
 });
 
-el('more').addEventListener('click', () => { state.limit += PAGE; render(); });
+el('more').addEventListener('click', () => {
+  // 先把已加载的显示完，用完了再去取下一片
+  if (state.shown.length > state.limit) { state.limit += PAGE; render(); return; }
+  loadShard(state.page).then(apply).catch(showError);
+});
 ['q','cat','stars','sort'].forEach((id) => {
   el(id).addEventListener('input', apply);
   el(id).addEventListener('change', apply);
 });
 
-fetch('data.json', { cache: 'no-cache' }).then((r) => {
-  if (!r.ok) throw new Error('HTTP ' + r.status);
+function showError(err){
+  el('list').style.border = '0';
+  el('list').innerHTML = '<div class="empty">加载清单失败：'
+    + esc(String((err && err.message) || err)) + '</div>';
+}
+
+// 取第 n 片（0 基）。片名由索引给出，带生成戳 → 内容不可变 → 可以长缓存。
+function loadShard(n){
+  const page = state.index && state.index.pages[n];
+  if (!page || state.loading) return Promise.resolve();
+  state.loading = true;
+  return fetch(page.f, { cache: 'force-cache' })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error('分片 HTTP ' + r.status))))
+    .then((chunk) => {
+      if (!Array.isArray(chunk)) throw new Error('分片格式不对');
+      state.data = state.data.concat(chunk);
+      state.page = n + 1;
+      state.loading = false;
+    })
+    .catch((err) => { state.loading = false; throw err; });
+}
+
+fetch('index.json', { cache: 'no-cache' }).then((r) => {
+  if (!r.ok) throw new Error('索引 HTTP ' + r.status);
   return r.json();
-}).then((payload) => {
-  const plugins = payload.plugins || [];
-  state.data = plugins;
+}).then((idx) => {
+  state.index = idx;
 
-  const total = plugins.length;
-  const hot = plugins.filter((p) => (p.st || 0) >= 50).length;
-  const pinned = plugins.filter((p) => PINNED.includes(p.k)).length;
-
+  // 统计量全部来自索引，不必等全量数据下来
+  const total = (idx.pages || []).reduce((sum, p) => sum + (p.n || 0), 0);
   el('stats').innerHTML =
       '<div class="stat"><b>' + total.toLocaleString() + '</b><span>收录插件</span></div>'
-    + '<div class="stat"><b>' + hot.toLocaleString() + '</b><span>50 星以上</span></div>'
-    + '<div class="stat"><b>' + pinned.toLocaleString() + '</b><span>地址已锁定</span></div>';
+    + '<div class="stat"><b>' + (idx.hot_50 || 0).toLocaleString() + '</b><span>50 星以上</span></div>'
+    + '<div class="stat"><b>' + (idx.pinned || 0).toLocaleString() + '</b><span>地址已锁定</span></div>';
 
-  const cats = new Map();
-  plugins.forEach((p) => cats.set(p.g || '其他', (cats.get(p.g || '其他') || 0) + 1));
   const sel = el('cat');
-  [...cats.entries()].sort((a,b) => b[1] - a[1]).forEach(([name, n]) => {
+  Object.entries(idx.categories || {}).sort((a, b) => b[1] - a[1]).forEach(([name, n]) => {
     const o = document.createElement('option');
     o.value = name; o.textContent = name + '（' + n + '）';
     sel.appendChild(o);
   });
 
-  el('meta').textContent = '清单生成于 ' + (payload.generated_at || '未知')
-    + ' · 共 ' + (payload.counts_total || '?') + ' 条候选，其中 ' + total.toLocaleString() + ' 条通过校验'
+  el('meta').textContent = '清单生成于 ' + (idx.generated_at || '未知')
+    + ' · 共 ' + (idx.counts_total || '?') + ' 条候选，其中 ' + total.toLocaleString() + ' 条通过校验'
     + ' · 排序按证据强度而非星数';
 
-  apply();
-}).catch((err) => {
-  el('list').innerHTML = '<div class="empty">加载清单失败：' + esc(err.message) + '</div>';
-});
+  return loadShard(0);
+}).then(apply).catch(showError);
 </script>
 </body>
 </html>

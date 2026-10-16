@@ -7,10 +7,9 @@
 # 插件只消费它，不在运行时抓 GitHub：验证一个插件要读两三个文件，
 # 上千条候选放进 UI 里现抓会把面板卡死，而且会撞上 API 限速。
 #
-# 可覆盖内置清单路径（默认用包内 data/index.json）：
-#   - id: dsh-plugin-index
-#     config:
-#       dataFile: /path/to/plugins.json
+# 没有运行时配置项：清单在构建期由 build-client.py 内联进客户端半侧
+# （lib/client.js），Host 半侧是空壳，不读任何 config。
+# 要换清单内容请重新构建，而不是在 profile 里配。
 - insert:
     - id: dsh-plugin-index
       name: dsh-plugin-index
